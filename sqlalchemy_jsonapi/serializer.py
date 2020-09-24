@@ -5,10 +5,15 @@ Colton J. Provias
 MIT License
 """
 
+import datetime
+from decimal import Decimal
 from enum import Enum
 
+import sqlalchemy as sa
+import dateutil.parser
 from inflection import dasherize, tableize, underscore
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import object_mapper, class_mapper
 from sqlalchemy.orm.interfaces import MANYTOONE
 from sqlalchemy.util.langhelpers import iterate_attributes
 
@@ -249,8 +254,9 @@ class JSONAPI(object):
             api_type = getattr(
                 model, '__jsonapi_type_override__', prepped_name)
 
-            model_keys = set(model.__mapper__.all_orm_descriptors.keys())
-            model_keys |= set(model.__mapper__.relationships.keys())
+            mapper = class_mapper(model)
+            model_keys = set(mapper.all_orm_descriptors.keys())
+            model_keys |= set(mapper.relationships.keys())
 
             model.__jsonapi_attribute_descriptors__ = {}
             model.__jsonapi_rel_desc__ = {}
@@ -333,9 +339,10 @@ class JSONAPI(object):
         }
 
     def _get_relationship(self, resource, rel_key, permission):
-        if rel_key not in resource.__mapper__.relationships.keys():
+        mapper = object_mapper(resource)
+        if rel_key not in mapper.relationships.keys():
             raise RelationshipNotFoundError(resource, resource, rel_key)
-        relationship = resource.__mapper__.relationships[rel_key]
+        relationship = mapper.relationships[rel_key]
         check_permission(resource, relationship.key, permission)
         return relationship
 
@@ -385,7 +392,8 @@ class JSONAPI(object):
         :param fields: Dictionary of fields to filter
         """
         api_type = instance.__jsonapi_type__
-        orm_desc_keys = instance.__mapper__.all_orm_descriptors.keys()
+        mapper = object_mapper(instance)
+        orm_desc_keys = mapper.all_orm_descriptors.keys()
         to_ret = {
             'id': instance.id,
             'type': api_type,
@@ -395,13 +403,14 @@ class JSONAPI(object):
         }
         attrs_to_ignore = {'__mapper__', 'id'}
         if api_type in fields.keys():
-            local_fields = list(map((
-                lambda x: instance.__jsonapi_map_to_py__[x]),
-                fields[api_type]))
+            local_fields = [
+                instance.__jsonapi_map_to_py__[x]
+                for x in fields[api_type]
+            ]
         else:
             local_fields = orm_desc_keys
 
-        for key, relationship in instance.__mapper__.relationships.items():
+        for key, relationship in mapper.relationships.items():
             attrs_to_ignore |= set([c.name for c in relationship.local_columns
                                     ]) | {key}
 
@@ -474,7 +483,15 @@ class JSONAPI(object):
             try:
                 desc = get_attr_desc(instance, key, AttributeActions.GET)
                 if key in local_fields:
-                    to_ret['attributes'][instance.__jsonapi_map_to_api__[key]] = desc(instance)  # NOQA
+                    v = desc(instance)  # NOQA
+                    if isinstance(v, datetime.date):
+                        v = v.isoformat()
+                    elif isinstance(v, Decimal):
+                        if self.options.get('decimal_to_str', True):
+                            v = str(v)
+                        else:
+                            v = float(v)
+                    to_ret['attributes'][instance.__jsonapi_map_to_api__[key]] = v
             except PermissionDeniedError:
                 continue
 
@@ -487,7 +504,7 @@ class JSONAPI(object):
         :param instance: The instance to check the relationships of.
         """
         check_permission(instance, None, Permissions.DELETE)
-        for rel_key, rel in instance.__mapper__.relationships.items():
+        for rel_key, rel in object_mapper(instance).relationships.items():
             check_permission(instance, rel_key, Permissions.EDIT)
 
             if rel.cascade.delete:
@@ -603,7 +620,7 @@ class JSONAPI(object):
                                         Permissions.EDIT)
 
             if reverse_side:
-                reverse_rel = item.__mapper__.relationships[reverse_side]
+                reverse_rel = object_mapper(item).relationships[reverse_side]
 
                 if reverse_rel.direction == MANYTOONE:
                     permission = Permissions.EDIT
@@ -654,6 +671,7 @@ class JSONAPI(object):
         :param api_type: The type of the model
         """
         model = self._fetch_model(api_key)
+        mapper = class_mapper(model)
         include = self._parse_include(query.get('include', '').split(','))
         fields = self._parse_fields(query)
         included = {}
@@ -670,9 +688,9 @@ class JSONAPI(object):
                 if attr[0] == '-'\
                 else [attr, True]
 
-            if attr_name not in model.__mapper__.all_orm_descriptors.keys()\
+            if attr_name not in mapper.all_orm_descriptors.keys()\
                     or not hasattr(model, attr_name)\
-                    or attr_name in model.__mapper__.relationships.keys():
+                    or attr_name in mapper.relationships.keys():
                 return NotSortableError(model, attr_name)
 
             attr = getattr(model, attr_name)
@@ -874,7 +892,7 @@ class JSONAPI(object):
                                         RelationshipActions.APPEND)
                 for item in related:
                     check_permission(item, None, Permissions.EDIT)
-                    remote = item.__mapper__.relationships[remote_side]
+                    remote = object_mapper(item).relationships[remote_side]
                     if remote.direction == MANYTOONE:
                         check_permission(item, remote_side, Permissions.EDIT)
                     else:
@@ -884,7 +902,7 @@ class JSONAPI(object):
                 for item in json_data['data']:
                     to_relate = self._fetch_resource(
                         session, item['type'], item['id'], Permissions.EDIT)
-                    remote = to_relate.__mapper__.relationships[remote_side]
+                    remote = object_mapper(to_relate).relationships[remote_side]
 
                     if remote.direction == MANYTOONE:
                         check_permission(to_relate, remote_side,
@@ -913,7 +931,7 @@ class JSONAPI(object):
         resource = self._fetch_resource(session, api_type, obj_id,
                                         Permissions.EDIT)
         self._check_json_data(json_data)
-        orm_desc_keys = resource.__mapper__.all_orm_descriptors.keys()
+        orm_desc_keys = object_mapper(resource).all_orm_descriptors.keys()
 
         if not ({'type', 'id'} <= set(json_data['data'].keys())):
             raise BadRequestError('Missing type or id')
@@ -941,7 +959,7 @@ class JSONAPI(object):
         session.add(resource)
 
         try:
-            for key, relationship in resource.__mapper__.relationships.items():
+            for key, relationship in object_mapper(resource).relationships.items():
                 api_key = resource.__jsonapi_map_to_api__[key]
                 attrs_to_ignore |= set(relationship.local_columns) | {key}
 
@@ -1003,7 +1021,7 @@ class JSONAPI(object):
         model = self._fetch_model(api_type)
         self._check_json_data(data)
 
-        orm_desc_keys = model.__mapper__.all_orm_descriptors.keys()
+        orm_desc_keys = class_mapper(model).all_orm_descriptors.keys()
 
         if 'type' not in data['data'].keys():
             raise MissingTypeError()
@@ -1021,7 +1039,7 @@ class JSONAPI(object):
         data_keys = set(map((
             lambda x: resource.__jsonapi_map_to_py__.get(x, MissingKey(x))),
             data['data'].get('relationships', {}).keys()))
-        model_keys = set(resource.__mapper__.relationships.keys())
+        model_keys = set(object_mapper(resource).relationships.keys())
         if not data_keys <= model_keys:
             data_keys = set([key.elem if isinstance(key, MissingKey) else key for key in data_keys])
             # pragma: no cover
@@ -1037,7 +1055,7 @@ class JSONAPI(object):
             if 'id' in data['data'].keys():
                 resource.id = data['data']['id']
 
-            for key, relationship in resource.__mapper__.relationships.items():
+            for key, relationship in object_mapper(resource).relationships.items():
                 attrs_to_ignore |= set(relationship.local_columns) | {key}
                 api_key = resource.__jsonapi_map_to_api__[key]
 
@@ -1067,7 +1085,7 @@ class JSONAPI(object):
                         to_relate = self._fetch_resource(
                             session, data_rel['type'], data_rel['id'],
                             Permissions.EDIT)
-                        rem = to_relate.__mapper__.relationships[remote_side]
+                        rem = object_mapper(to_relate).relationships[remote_side]
                         if rem.direction == MANYTOONE:
                             check_permission(to_relate, remote_side,
                                              Permissions.EDIT)
@@ -1089,7 +1107,7 @@ class JSONAPI(object):
                         to_relate = self._fetch_resource(session, item['type'],
                                                          item['id'],
                                                          Permissions.EDIT)
-                        rem = to_relate.__mapper__.relationships[remote_side]
+                        rem = object_mapper(to_relate).relationships[remote_side]
                         if rem.direction == MANYTOONE:
                             check_permission(to_relate, remote_side,
                                              Permissions.EDIT)
@@ -1113,10 +1131,23 @@ class JSONAPI(object):
                 for setter, value in setters:
                     setter(resource, value)
 
+                mapper = class_mapper(model)
                 for key in data_keys:
                     api_key = resource.__jsonapi_map_to_api__[key]
                     setter = get_attr_desc(resource, key, AttributeActions.SET)
-                    setter(resource, data['data']['attributes'][api_key])
+                    v = data['data']['attributes'][api_key]
+                    colprop = getattr(mapper.column_attrs, key, None)
+                    if colprop is not None and isinstance(colprop.expression, sa.Column):
+                        coltype = colprop.expression.type
+                        if isinstance(coltype, (sa.types.String, sa.types.Unicode, sa.types.Integer, sa.types.Text, sa.types.Float)):
+                            pass
+                        elif isinstance(coltype, sa.types.Numeric):
+                            v = Decimal(v)
+                        elif isinstance(coltype, sa.types.DateTime):
+                            v = dateutil.parser.isoparse(v)
+                        elif isinstance(coltype, sa.types.Date):
+                            v = datetime.date.fromisoformat(v)
+                    setter(resource, v)
 
                 session.add(resource)
                 session.commit()
@@ -1181,7 +1212,7 @@ class JSONAPI(object):
                     to_relate = self._fetch_resource(
                         session, item['type'], item['id'], Permissions.EDIT)
 
-                    rem = to_relate.__mapper__.relationships[remote_side]
+                    rem = object_mapper(to_relate).relationships[remote_side]
 
                     if rem.direction == MANYTOONE:
                         check_permission(to_relate, remote_side,

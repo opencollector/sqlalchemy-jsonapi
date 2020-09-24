@@ -15,7 +15,7 @@ GitHub at https://github.com/coltonprovias/sqlalchemy-jsonapi
 from setuptools import setup
 import sys
 
-requirements = ['SQLAlchemy', 'inflection']
+requirements = ['SQLAlchemy', 'inflection', 'python-dateutil']
 
 if sys.version_info[0] != 3 or sys.version_info[1] < 4:
     requirements.append('enum34')
