@@ -33,4 +33,11 @@ def test_extra_keys(session, comment):
                 options={'dasherize': False, 'disallow_extra_attributes': True})
 
     with pytest.raises(BadRequestError):
-        api.serializer.patch_resource(session, {'nonexistent': False}, 'blog_comments', comment.id)
+        api.serializer.patch_resource(session, {'data': {'type': 'blog_comments', 'id': comment.id, 'attributes': {'nonexistent': False}}}, 'blog_comments', comment.id)
+
+
+def test_field_name_filter(session, comment):
+    api.serializer = JSONAPI(api.serializer.base, api.serializer.prefix,
+                options={'field_name_filter': lambda x: "$" + x, 'disallow_extra_attributes': True})
+
+    api.serializer.patch_resource(session, {'data': {'type': 'blog-comments', 'id': comment.id, 'attributes': {'$content': 'hey'}}}, 'blog-comments', comment.id)

@@ -303,12 +303,18 @@ class JSONAPI(object):
             self.models[model.__jsonapi_type__] = model
 
     def _filter_field_name(self, word):
+        field_name_filter = self.options.get('field_name_filter')
+        if field_name_filter is not None:
+            return field_name_filter(word)
         if self.options.get('dasherize', True):
             return dasherize(underscore(word))
         return word
 
     def _api_type_for_model(self, model):
-        if self.options.get('dasherize', True):
+        model_name_builder = self.options.get('model_name_builder')
+        if model_name_builder is not None:
+            return model_name_builder(model)
+        elif self.options.get('dasherize', True):
             return dasherize(tableize(model.__name__))
         else:
             return tableize(model.__name__)
