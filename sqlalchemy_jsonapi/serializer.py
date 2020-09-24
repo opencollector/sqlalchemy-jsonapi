@@ -5,10 +5,7 @@ Colton J. Provias
 MIT License
 """
 
-try:
-    from enum import Enum
-except ImportError:
-    from enum34 import Enum
+from enum import Enum
 
 from inflection import dasherize, tableize, underscore
 from sqlalchemy.exc import IntegrityError
@@ -224,6 +221,7 @@ class JSONAPI(object):
 
     default_options = {
         'dasherize': True,
+        'disallow_extra_attributes': False,
     }
 
     def __init__(self, base, prefix='', options=None):
@@ -258,8 +256,8 @@ class JSONAPI(object):
             model.__jsonapi_rel_desc__ = {}
             model.__jsonapi_permissions__ = {}
             model.__jsonapi_type__ = api_type
-            model.__jsonapi_map_to_py__ = {self._dasherize(underscore(x)): x for x in model_keys}
-            model.__jsonapi_map_to_api__ = {x: self._dasherize(underscore(x)) for x in model_keys}
+            model.__jsonapi_map_to_py__ = {self._filter_field_name(x): x for x in model_keys}
+            model.__jsonapi_map_to_api__ = {x: self._filter_field_name(x) for x in model_keys}
 
             for prop_name, prop_value in iterate_attributes(model):
 
@@ -304,13 +302,16 @@ class JSONAPI(object):
                             perm_idv[check_perm] = prop_value
             self.models[model.__jsonapi_type__] = model
 
-    def _dasherize(self, word):
+    def _filter_field_name(self, word):
         if self.options.get('dasherize', True):
-            return dasherize(word)
+            return dasherize(underscore(word))
         return word
 
     def _api_type_for_model(self, model):
-        return self._dasherize(tableize(model.__name__))
+        if self.options.get('dasherize', True):
+            return dasherize(tableize(model.__name__))
+        else:
+            return tableize(model.__name__)
 
     def _fetch_model(self, api_type):
         if api_type not in self.models.keys():
@@ -945,16 +946,28 @@ class JSONAPI(object):
                     session, json_data['data']['relationships'][api_key],
                     model.__jsonapi_type__, resource.id, api_key)
 
-            data_keys = set(map((
-                lambda x: resource.__jsonapi_map_to_py__.get(x, None)),
-                json_data['data']['attributes'].keys()))
+            data_keys = {
+                resource.__jsonapi_map_to_py__[k]
+                for k in json_data['data']['attributes']
+                if k in resource.__jsonapi_map_to_py__
+            }
+            extra_keys = {
+                k
+                for k in json_data['data']['attributes']
+                if k not in resource.__jsonapi_map_to_py__
+            }
             model_keys = set(orm_desc_keys) - attrs_to_ignore
 
             if not data_keys <= model_keys:
                 raise BadRequestError(
                     '{} not attributes for {}.{}'.format(
-                        ', '.join(list(data_keys - model_keys)),
+                        ', '.join(data_keys - model_keys),
                         model.__jsonapi_type__, resource.id))
+            if self.options['disallow_extra_attributes'] and extra_keys:
+                raise BadRequestError(
+                    'extra attributes found for {}.{}: {}'.format(
+                        model.__jsonapi_type__, resource.id,
+                        ', '.join(extra_keys)))
 
             for key in data_keys & model_keys:
                 setter = get_attr_desc(resource, key, AttributeActions.SET)

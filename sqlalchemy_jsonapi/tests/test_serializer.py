@@ -1,6 +1,8 @@
 from app import api
 from sqlalchemy_jsonapi import JSONAPI
+from sqlalchemy_jsonapi.errors import BadRequestError
 import uuid
+import pytest
 
 
 def test_include_different_types_same_id(session, comment):
@@ -24,3 +26,11 @@ def test_no_dasherize(session, comment):
     assert r.data['data']['type'] == 'blog_comments'
 
     api.serializer = JSONAPI(api.serializer.base, api.serializer.prefix)
+
+
+def test_extra_keys(session, comment):
+    api.serializer = JSONAPI(api.serializer.base, api.serializer.prefix,
+                options={'dasherize': False, 'disallow_extra_attributes': True})
+
+    with pytest.raises(BadRequestError):
+        api.serializer.patch_resource(session, {'nonexistent': False}, 'blog_comments', comment.id)
